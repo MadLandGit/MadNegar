@@ -1,0 +1,48 @@
+name: Sync release descriptions
+
+on:
+  push:
+    branches:
+      - main
+    paths:
+      - ".github/workflows/sync-release-descriptions.yml"
+      - "docs/RELEASE_NOTES_1.0.0.md"
+      - "docs/RELEASE_NOTES_1.0.1.md"
+
+permissions:
+  contents: write
+
+concurrency:
+  group: sync-madnegar-release-descriptions
+  cancel-in-progress: false
+
+jobs:
+  update-release-notes:
+    name: Update v1.0.0 and v1.0.1 release descriptions
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out release notes
+        uses: actions/checkout@v7
+
+      - name: Update release descriptions when the corresponding release exists
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+        run: |
+          set -euo pipefail
+
+          update_release_if_present() {
+            local tag="$1"
+            local title="$2"
+            local notes="$3"
+
+            if gh release view "$tag" --repo "$GH_REPO" >/dev/null 2>&1; then
+              gh release edit "$tag" --repo "$GH_REPO" --title "$title" --notes-file "$notes"
+              echo "Updated $tag without replacing its binary assets."
+            else
+              echo "Skipping $tag because that release does not exist in $GH_REPO yet."
+            fi
+          }
+
+          update_release_if_present "v1.0.0" "MadNegar v1.0.0 — Initial Windows x64 Release" "docs/RELEASE_NOTES_1.0.0.md"
+          update_release_if_present "v1.0.1" "MadNegar v1.0.1 — Persian Half-Space Boundary Fix" "docs/RELEASE_NOTES_1.0.1.md"

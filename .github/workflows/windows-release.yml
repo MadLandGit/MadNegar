@@ -1,0 +1,182 @@
+name: Build and publish Windows release
+
+on:
+  push:
+    branches:
+      - main
+    paths:
+      - ".github/workflows/windows-release.yml"
+      - "VERSION"
+      - "MadNegar.csproj"
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: madnegar-windows-release
+  cancel-in-progress: false
+
+jobs:
+  build-and-release:
+    name: Build Windows x64 and publish the version in source
+    runs-on: windows-latest
+    timeout-minutes: 45
+    env:
+      PYTHONUTF8: "1"
+    steps:
+      - name: Checkout the commit being released
+        uses: actions/checkout@v7
+        with:
+          ref: ${{ github.sha }}
+          fetch-depth: 0
+
+      - name: Set up .NET 10 SDK
+        uses: actions/setup-dotnet@v6
+        with:
+          dotnet-version: "10.0.x"
+
+      - name: Set up Python
+        uses: actions/setup-python@v6
+        with:
+          python-version: "3.12"
+
+      - name: Validate release version and tag
+        id: release
+        shell: pwsh
+        run: |
+          [xml]$project = Get-Content .\MadNegar.csproj -Raw
+          $projectVersion = [string]$project.Project.PropertyGroup.Version
+          $fileVersion = (Get-Content .\VERSION -Raw).Trim()
+          if ([string]::IsNullOrWhiteSpace($projectVersion) -or $projectVersion -ne $fileVersion) {
+            throw "Release version mismatch: csproj=$projectVersion; VERSION=$fileVersion"
+          }
+          if ($projectVersion -notmatch '^\d+\.\d+\.\d+$') {
+            throw "Invalid stable release version: $projectVersion"
+          }
+          $tag = "v$projectVersion"
+          $tagLines = @(git tag --list $tag)
+          $existingTag = ""
+          if ($tagLines.Count -gt 0) { $existingTag = [string]$tagLines[0] }
+          if ($existingTag) {
+            $existingCommit = (git rev-list -n 1 $tag).Trim()
+            if ($LASTEXITCODE -ne 0) { throw "Could not resolve existing tag $tag." }
+            if ($existingCommit -ne $env:GITHUB_SHA) {
+              throw "Tag $tag already points to $existingCommit, not this build commit $env:GITHUB_SHA. Bump the version before publishing new source."
+            }
+          }
+          "version=$projectVersion" >> $env:GITHUB_OUTPUT
+          "tag=$tag" >> $env:GITHUB_OUTPUT
+          Write-Host "Validated release version $projectVersion ($tag)."
+
+      - name: Run source checks and Python tests
+        shell: pwsh
+        run: |
+          python .\tests\run_source_checks.py
+          if ($LASTEXITCODE -ne 0) { throw "Source checks failed." }
+          python .\tests\check_csharp_structure.py
+          if ($LASTEXITCODE -ne 0) { throw "C# structural checks failed." }
+          python -m py_compile .\FasterWhisperAdapter.py .\tests\test_faster_whisper_adapter.py .\tests\test_release_contract.py
+          if ($LASTEXITCODE -ne 0) { throw "Python compilation checks failed." }
+          python -m unittest discover -s tests -p "test_*.py" -v
+          if ($LASTEXITCODE -ne 0) { throw "Python unit tests failed." }
+
+      - name: Restore and compile .NET projects
+        shell: pwsh
+        run: |
+          dotnet restore .\MadNegar.csproj
+          if ($LASTEXITCODE -ne 0) { throw "dotnet restore failed." }
+          dotnet build .\MadNegar.csproj --configuration Release --no-restore
+          if ($LASTEXITCODE -ne 0) { throw "MadNegar .NET build failed." }
+          dotnet run --project .\tests\PersianTextNormalizerChecks\PersianTextNormalizerChecks.csproj --configuration Release
+          if ($LASTEXITCODE -ne 0) { throw "Persian text normalizer checks failed." }
+
+      - name: Install Inno Setup compiler
+        shell: pwsh
+        run: |
+          choco install innosetup --yes --no-progress
+          if ($LASTEXITCODE -ne 0) { throw "Inno Setup installation failed." }
+
+      - name: Build standalone EXE and installer
+        shell: pwsh
+        run: |
+          .\Build-Installer.ps1
+
+      - name: Validate release assets and SHA-256 files
+        shell: pwsh
+        run: |
+          $version = "${{ steps.release.outputs.version }}"
+          $installerName = "MadNegar-Setup-$version.exe"
+          $assets = @(
+            @{ Path = ".\publish\MadNegar.exe"; HashPath = ".\publish\MadNegar.exe.sha256"; Name = "MadNegar.exe" },
+            @{ Path = ".\output\$installerName"; HashPath = ".\output\$installerName.sha256"; Name = $installerName }
+          )
+          foreach ($asset in $assets) {
+            if (-not (Test-Path -LiteralPath $asset.Path -PathType Leaf)) { throw "Missing release asset: $($asset.Path)" }
+            if (-not (Test-Path -LiteralPath $asset.HashPath -PathType Leaf)) { throw "Missing SHA-256 sidecar: $($asset.HashPath)" }
+            $stream = [System.IO.File]::OpenRead((Resolve-Path -LiteralPath $asset.Path).Path)
+            try {
+              $first = $stream.ReadByte()
+              $second = $stream.ReadByte()
+            } finally { $stream.Dispose() }
+            if ($first -ne 0x4D -or $second -ne 0x5A) { throw "Asset is not a Windows PE executable: $($asset.Path)" }
+            $actual = (Get-FileHash -LiteralPath $asset.Path -Algorithm SHA256).Hash.ToLowerInvariant()
+            $expected = ((Get-Content -LiteralPath $asset.HashPath -Raw).Trim() -split '\s+')[0].ToLowerInvariant()
+            if ($actual -ne $expected) { throw "SHA-256 mismatch for $($asset.Name)" }
+            Write-Host "$($asset.Name): $((Get-Item -LiteralPath $asset.Path).Length) bytes; SHA-256 $actual"
+          }
+
+      - name: Keep a copy on the workflow run
+        uses: actions/upload-artifact@v7
+        with:
+          name: MadNegar-v${{ steps.release.outputs.version }}-Windows-x64
+          path: |
+            publish/MadNegar.exe
+            publish/MadNegar.exe.sha256
+            output/MadNegar-Setup-${{ steps.release.outputs.version }}.exe
+            output/MadNegar-Setup-${{ steps.release.outputs.version }}.exe.sha256
+          if-no-files-found: error
+          retention-days: 30
+
+      - name: Publish GitHub Release and attach binaries
+        uses: softprops/action-gh-release@v3
+        with:
+          tag_name: ${{ steps.release.outputs.tag }}
+          target_commitish: ${{ github.sha }}
+          name: MadNegar ${{ steps.release.outputs.tag }} — Windows x64
+          draft: false
+          prerelease: false
+          make_latest: true
+          overwrite_files: true
+          fail_on_unmatched_files: true
+          files: |
+            publish/MadNegar.exe
+            publish/MadNegar.exe.sha256
+            output/MadNegar-Setup-${{ steps.release.outputs.version }}.exe
+            output/MadNegar-Setup-${{ steps.release.outputs.version }}.exe.sha256
+          body: |
+            # MadNegar ${{ steps.release.outputs.tag }} — Windows x64
+
+            بستهٔ اجرایی MadNegar برای Windows x64.
+
+            ## فایل‌های دانلود
+            - **MadNegar-Setup-${{ steps.release.outputs.version }}.exe**: نصب‌کنندهٔ پیشنهادی برای بیشتر کاربران.
+            - **MadNegar.exe**: فایل اجرایی مستقل؛ بدون نصب‌کننده.
+            - فایل‌های **.sha256** برای بررسی یکپارچگی دانلود.
+
+            ## نیازمندی‌ها و راه‌اندازی
+            - Windows 10/11، نسخهٔ 64 بیتی.
+            - فایل اجرایی self-contained است و به نصب جداگانهٔ .NET Runtime نیاز ندارد.
+            - مدل‌های تشخیص گفتار داخل این بسته نیستند و باید از داخل برنامه تهیه شوند. آماده‌سازی اولیهٔ runtime یا مدل‌ها ممکن است به اینترنت نیاز داشته باشد.
+
+            ## تغییرات
+            یادداشت انتشار فارسی در مخزن ارائه شده است: docs/RELEASE_NOTES_${{ steps.release.outputs.version }}_FA.md
+
+            ## اعتبارسنجی
+            فایل‌ها فقط پس از موفقیت تست‌های خودکار، کامپایل روی Windows، بررسی خروجی‌های PE و تطبیق SHA-256 منتشر می‌شوند.
+
+            برای بررسی هش در PowerShell:
+            ```powershell
+            Get-FileHash .\MadNegar-Setup-${{ steps.release.outputs.version }}.exe -Algorithm SHA256
+            Get-FileHash .\MadNegar.exe -Algorithm SHA256
+            ```

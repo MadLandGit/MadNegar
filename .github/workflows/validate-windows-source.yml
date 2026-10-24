@@ -1,0 +1,69 @@
+name: Validate Windows source
+
+on:
+  push:
+    branches:
+      - main
+    paths:
+      - ".github/workflows/validate-windows-source.yml"
+      - "src/**/*.cs"
+      - "tests/**"
+      - "MadNegar.csproj"
+      - "FasterWhisperAdapter.py"
+  pull_request:
+    paths:
+      - ".github/workflows/validate-windows-source.yml"
+      - "src/**/*.cs"
+      - "tests/**"
+      - "MadNegar.csproj"
+      - "FasterWhisperAdapter.py"
+
+permissions:
+  contents: read
+
+concurrency:
+  group: validate-madnegar-windows-source-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  validate:
+    name: Run regression checks and build
+    runs-on: windows-latest
+    timeout-minutes: 30
+    env:
+      PYTHONUTF8: "1"
+    steps:
+      - name: Check out source
+        uses: actions/checkout@v7
+
+      - name: Set up .NET 10 SDK
+        uses: actions/setup-dotnet@v6
+        with:
+          dotnet-version: "10.0.x"
+
+      - name: Set up Python
+        uses: actions/setup-python@v6
+        with:
+          python-version: "3.12"
+
+      - name: Run source checks and Python tests
+        shell: pwsh
+        run: |
+          python .\tests\run_source_checks.py
+          if ($LASTEXITCODE -ne 0) { throw "Source checks failed." }
+          python .\tests\check_csharp_structure.py
+          if ($LASTEXITCODE -ne 0) { throw "C# structural checks failed." }
+          python -m py_compile .\FasterWhisperAdapter.py .\tests\test_faster_whisper_adapter.py .\tests\test_release_contract.py
+          if ($LASTEXITCODE -ne 0) { throw "Python compilation checks failed." }
+          python -m unittest discover -s tests -p "test_*.py" -v
+          if ($LASTEXITCODE -ne 0) { throw "Python unit tests failed." }
+
+      - name: Restore and compile .NET projects
+        shell: pwsh
+        run: |
+          dotnet restore .\MadNegar.csproj
+          if ($LASTEXITCODE -ne 0) { throw "dotnet restore failed." }
+          dotnet build .\MadNegar.csproj --configuration Release --no-restore
+          if ($LASTEXITCODE -ne 0) { throw "MadNegar .NET build failed." }
+          dotnet run --project .\tests\PersianTextNormalizerChecks\PersianTextNormalizerChecks.csproj --configuration Release
+          if ($LASTEXITCODE -ne 0) { throw "Persian text-normalizer checks failed." }

@@ -1,0 +1,24 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <OutputType>Exe</OutputType>
+    <TargetFramework>net10.0</TargetFramework>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <Nullable>enable</Nullable>
+  </PropertyGroup>
+  <ItemGroup>
+    <Compile Include="../../src/PersianTextNormalizer.cs" Link="PersianTextNormalizer.cs" />
+    <Compile Include="../../src/AutoLanguageText.cs" Link="AutoLanguageText.cs" />
+    <Compile Include="../../src/ModelCatalog.cs" Link="ModelCatalog.cs" />
+    <Compile Include="../../src/ModelInfo.cs" Link="ModelInfo.cs" />
+    <Compile Include="../../src/ProviderModelCatalog.cs" Link="ProviderModelCatalog.cs" />
+    <Compile Include="../../src/SpeechModelChoice.cs" Link="SpeechModelChoice.cs" />
+    <Compile Include="../../src/DualModelSelectionPolicy.cs" Link="DualModelSelectionPolicy.cs" />
+    <Compile Include="../../src/LocalDictionary.cs" Link="LocalDictionary.cs" />
+    <Compile Include="../../src/TranscriptHistory.cs" Link="TranscriptHistory.cs" />
+    <Compile Include="../../src/TranscriptTextExport.cs" Link="TranscriptTextExport.cs" />
+    <Compile Include="../../src/DiagnosticsState.cs" Link="DiagnosticsState.cs" />
+    <Compile Include="../../src/AudioProfilePolicy.cs" Link="AudioProfilePolicy.cs" />
+    <Compile Include="../../src/SubtitleExportSupport.cs" Link="SubtitleExportSupport.cs" />
+    <Compile Include="../../src/BatchTranscriptionSupport.cs" Link="BatchTranscriptionSupport.cs" />
+  </ItemGroup>
+</Project>
