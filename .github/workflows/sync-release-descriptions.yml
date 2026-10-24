@@ -8,6 +8,8 @@ on:
       - ".github/workflows/sync-release-descriptions.yml"
       - "docs/RELEASE_NOTES_1.0.0.md"
       - "docs/RELEASE_NOTES_1.0.1.md"
+  release:
+    types: [published]
 
 permissions:
   contents: write
